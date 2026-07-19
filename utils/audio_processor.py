@@ -15,28 +15,43 @@ print(">>> audio_processor.py loaded: v4-no-oauth <<<")
 from pathlib import Path
 import os
 
-BASE_DIR = Path(__file__).resolve().parent
+from pathlib import Path
+import platform
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 cookie_env = os.getenv("YTDLP_COOKIES_FILE")
 
+COOKIES_FILE = None
+
 if cookie_env:
-    COOKIES_FILE = str((BASE_DIR / cookie_env).resolve())
-else:
-    COOKIES_FILE = None
-    print("Cookie path:", COOKIES_FILE)
-print("Exists:", os.path.exists(COOKIES_FILE) if COOKIES_FILE else False)
+    path = Path(cookie_env)
 
+    if path.is_absolute():
+        COOKIES_FILE = str(path)
+    else:
+        COOKIES_FILE = str((BASE_DIR / path).resolve())
 
+COOKIES_FROM_BROWSER = os.getenv("YTDLP_COOKIES_FROM_BROWSER")
 
+# Browser cookies only work on Windows
+if platform.system() != "Windows":
+    COOKIES_FROM_BROWSER = None
 
-        # cookies.txt path
-COOKIES_FROM_BROWSER = os.environ.get("YTDLP_COOKIES_FROM_BROWSER")  # e.g. "chrome"
+CLIENT_FALLBACK_ORDER = [
+    "mweb",
+    "android",
+    "ios",
+    "web",
+    "tv_embedded",
+]
 
-CLIENT_FALLBACK_ORDER = ["mweb", "android", "ios", "web", "tv_embedded"]
-
-print("COOKIES_FILE =", repr(COOKIES_FILE))
-print("COOKIES_FROM_BROWSER =", repr(COOKIES_FROM_BROWSER))
-print("File exists:", os.path.exists(COOKIES_FILE) if COOKIES_FILE else False)
+print("=" * 60)
+print("Operating System :", platform.system())
+print("Cookies File      :", COOKIES_FILE)
+print("Cookies Exists    :", os.path.exists(COOKIES_FILE) if COOKIES_FILE else False)
+print("Browser Cookies   :", COOKIES_FROM_BROWSER)
+print("=" * 60)
 
 
 
@@ -75,20 +90,21 @@ def _build_ydl_opts(output_path: str, player_client: str, format_selector: str) 
         ],
     }
 
-    # Priority 1: cookies.txt file
-    if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+        # Priority 1: cookies.txt
+    if COOKIES_FILE and os.path.isfile(COOKIES_FILE):
         opts["cookiefile"] = COOKIES_FILE
-        print(f"  Using cookies file: {COOKIES_FILE}")
+        print(f"Using cookies file: {COOKIES_FILE}")
 
-    # Priority 2: cookies from browser (chrome/firefox/edge/brave)
+    # Priority 2: Browser cookies (Windows only)
     elif COOKIES_FROM_BROWSER:
-        opts["cookiesfrombrowser"] = (COOKIES_FROM_BROWSER, None, None, None)
-        print(f"  Using cookies from browser: {COOKIES_FROM_BROWSER}")
+        try:
+            opts["cookiesfrombrowser"] = (COOKIES_FROM_BROWSER,)
+            print(f"Using browser cookies: {COOKIES_FROM_BROWSER}")
+        except Exception as e:
+            print(f"Could not load browser cookies: {e}")
 
     else:
-        print("  ⚠️  No cookies configured — YouTube may block. Set YTDLP_COOKIES_FILE or YTDLP_COOKIES_FROM_BROWSER in .env")
-
-    return opts
+        print("No cookies configured.")
 
 
 def _pick_best_format(formats: list):
