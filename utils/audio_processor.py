@@ -206,7 +206,7 @@ def download_youtube_audio(url: str) -> str:
             last_error = RuntimeError(f"No usable formats from client '{client}'.")
             continue
 
-        download_opts = _build_ydl_opts(output_path, client, format_id)
+        download_opts = _build_ydl_opts(output_path, client,  "bestaudio/best" )
 
         try:
             with yt_dlp.YoutubeDL(download_opts) as ydl:
