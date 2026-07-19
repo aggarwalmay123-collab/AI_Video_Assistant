@@ -105,7 +105,8 @@ def _build_ydl_opts(output_path: str, player_client: str, format_selector: str) 
 
     else:
         print("No cookies configured.")
-
+        
+    return opts
 
 def _pick_best_format(formats: list):
     if not formats:
