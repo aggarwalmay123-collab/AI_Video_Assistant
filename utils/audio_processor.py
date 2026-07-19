@@ -19,6 +19,8 @@ from pathlib import Path
 import platform
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
 
 cookie_env = os.getenv("YTDLP_COOKIES_FILE")
 
