@@ -1,60 +1,41 @@
 import yt_dlp
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
 import os
 import subprocess
 import math
+import platform
+from pathlib import Path
+from dotenv import load_dotenv
+
+# ── Load .env from project root ───────────────────────────────────────────────
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env", override=True)
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-print(">>> audio_processor.py loaded: v4-no-oauth <<<")
-from pathlib import Path
-import os
+print(">>> audio_processor.py loaded: v6-clean <<<")
 
-from pathlib import Path
-import platform
+# ── Cookie config ─────────────────────────────────────────────────────────────
+_cookie_env = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+if _cookie_env:
+    _path = Path(_cookie_env)
+    COOKIES_FILE = str(_path if _path.is_absolute() else (BASE_DIR / _path).resolve())
+else:
+    COOKIES_FILE = None
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
-
-
-cookie_env = os.getenv("YTDLP_COOKIES_FILE")
-
-COOKIES_FILE = None
-
-if cookie_env:
-    path = Path(cookie_env)
-
-    if path.is_absolute():
-        COOKIES_FILE = str(path)
-    else:
-        COOKIES_FILE = str((BASE_DIR / path).resolve())
-
-COOKIES_FROM_BROWSER = os.getenv("YTDLP_COOKIES_FROM_BROWSER")
-
-# Browser cookies only work on Windows
+# Browser cookies only work on Windows (Chrome profile lock issues on Linux)
+COOKIES_FROM_BROWSER = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip() or None
 if platform.system() != "Windows":
     COOKIES_FROM_BROWSER = None
 
-CLIENT_FALLBACK_ORDER = [
-    "mweb",
-    "android",
-    "ios",
-    "web",
-    "tv_embedded",
-]
+CLIENT_FALLBACK_ORDER = ["tv_embedded", "mweb", "android", "ios", "web"]
 
 print("=" * 60)
-print("Operating System :", platform.system())
-print("Cookies File      :", COOKIES_FILE)
-print("Cookies Exists    :", os.path.exists(COOKIES_FILE) if COOKIES_FILE else False)
-print("Browser Cookies   :", COOKIES_FROM_BROWSER)
+print(f"OS               : {platform.system()}")
+print(f"Cookies File     : {COOKIES_FILE}")
+print(f"Cookies Exists   : {os.path.exists(COOKIES_FILE) if COOKIES_FILE else False}")
+print(f"Browser Cookies  : {COOKIES_FROM_BROWSER}")
 print("=" * 60)
-
 
 
 def _build_ydl_opts(output_path: str, player_client: str, format_selector: str) -> dict:
@@ -92,23 +73,19 @@ def _build_ydl_opts(output_path: str, player_client: str, format_selector: str) 
         ],
     }
 
-        # Priority 1: cookies.txt
+    # Priority 1: cookies.txt file
     if COOKIES_FILE and os.path.isfile(COOKIES_FILE):
         opts["cookiefile"] = COOKIES_FILE
-        print(f"Using cookies file: {COOKIES_FILE}")
-
-    # Priority 2: Browser cookies (Windows only)
+        print(f"  🍪 Using cookies file: {COOKIES_FILE}")
+    # Priority 2: browser cookies (Windows only)
     elif COOKIES_FROM_BROWSER:
-        try:
-            opts["cookiesfrombrowser"] = (COOKIES_FROM_BROWSER,)
-            print(f"Using browser cookies: {COOKIES_FROM_BROWSER}")
-        except Exception as e:
-            print(f"Could not load browser cookies: {e}")
-
+        opts["cookiesfrombrowser"] = (COOKIES_FROM_BROWSER, None, None, None)
+        print(f"  🍪 Using browser cookies: {COOKIES_FROM_BROWSER}")
     else:
-        print("No cookies configured.")
-        
+        print("  ⚠️  No cookies — YouTube may block cloud/server IPs")
+
     return opts
+
 
 def _pick_best_format(formats: list):
     if not formats:
@@ -122,7 +99,7 @@ def _pick_best_format(formats: list):
     if audio_only:
         audio_only.sort(key=lambda f: f.get("abr") or 0, reverse=True)
         best = audio_only[0]
-        print(f"  Selected audio-only: {best['format_id']} ({best.get('ext','?')}, {best.get('abr','?')}kbps)")
+        print(f"  ✔ Audio-only: {best['format_id']} ({best.get('ext','?')}, {best.get('abr','?')}kbps)")
         return best["format_id"]
 
     progressive = [
@@ -133,68 +110,51 @@ def _pick_best_format(formats: list):
     if progressive:
         progressive.sort(key=lambda f: f.get("height") or 0)
         best = progressive[0]
-        print(f"  Selected progressive: {best['format_id']} ({best.get('ext','?')}, {best.get('height','?')}p)")
+        print(f"  ✔ Progressive: {best['format_id']} ({best.get('ext','?')}, {best.get('height','?')}p)")
         return best["format_id"]
 
     return None
 
 
-def _is_drm_error(error_text: str) -> bool:
-    drm_keywords = ["drm protected", "drm-protected", "widevine", "is encrypted"]
-    return any(kw in error_text.lower() for kw in drm_keywords)
+def _is_drm_error(text: str) -> bool:
+    return any(k in text.lower() for k in [
+        "drm protected", "drm-protected", "widevine", "is encrypted"
+    ])
 
 
-def _is_auth_error(error_text: str) -> bool:
-    auth_keywords = [
-        "sign in to confirm", "bot", "429", "too many requests",
-        "http error 403", "403", "login required", "oauth",
-        "use --cookies", "cookies",
-    ]
-    return any(kw in error_text.lower() for kw in auth_keywords)
+def _is_auth_error(text: str) -> bool:
+    return any(k in text.lower() for k in [
+        "403", "http error 403", "sign in", "bot",
+        "too many requests", "429", "login required", "use --cookies",
+    ])
 
 
 def download_youtube_audio(url: str) -> str:
     output_path = os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s")
     last_error = None
+    auth_blocked = False
 
     for client in CLIENT_FALLBACK_ORDER:
         print(f"\n--- Trying player_client='{client}' ---")
 
+        # Step 1: probe available formats
         probe_opts = _build_ydl_opts(output_path, client, "bestaudio/best")
         probe_opts["quiet"] = True
         probe_opts["no_warnings"] = True
 
         try:
-            print(f"  Probing formats...")
+            print("  Probing formats...")
             with yt_dlp.YoutubeDL(probe_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
         except yt_dlp.utils.DownloadError as e:
-            error_text = str(e)
-            print(f"  Probe failed ({client}): {error_text[:200]}")
-
-            if _is_drm_error(error_text):
-                raise RuntimeError(
-                    f"This video is genuinely DRM-protected and cannot be downloaded."
-                ) from e
-
-            if _is_auth_error(error_text):
-                last_error = RuntimeError(
-                    "YouTube is blocking downloads (authentication required).\n\n"
-                    "QUICK FIX — add ONE of these to your .env file:\n\n"
-                    "Option A (recommended): Use browser cookies directly\n"
-                    "  YTDLP_COOKIES_FROM_BROWSER=chrome\n"
-                    "  (or: firefox / edge / brave / opera)\n\n"
-                    "Option B: Export cookies.txt manually\n"
-                    "  1. Install 'Get cookies.txt LOCALLY' Chrome extension\n"
-                    "  2. Go to youtube.com while logged in\n"
-                    "  3. Export → save as cookies.txt in project root\n"
-                    "  4. Add: YTDLP_COOKIES_FILE=cookies.txt to .env\n\n"
-                    f"Raw error: {error_text[:300]}"
-                )
-                continue
-
-            last_error = e
+            err = str(e)
+            print(f"  Probe failed: {err[:300]}")
+            if _is_drm_error(err):
+                raise RuntimeError("This video is DRM-protected and cannot be downloaded.")
+            if _is_auth_error(err):
+                auth_blocked = True
+            last_error = err
             continue
 
         formats = info.get("formats") or []
@@ -202,11 +162,12 @@ def download_youtube_audio(url: str) -> str:
         format_id = _pick_best_format(formats)
 
         if not format_id:
-            print(f"  No usable formats for client='{client}'")
-            last_error = RuntimeError(f"No usable formats from client '{client}'.")
+            print(f"  No usable formats for '{client}'")
+            last_error = f"No usable formats from client '{client}'"
             continue
 
-        download_opts = _build_ydl_opts(output_path, client,  "bestaudio/best" )
+        # Step 2: download with confirmed format_id
+        download_opts = _build_ydl_opts(output_path, client, format_id)
 
         try:
             with yt_dlp.YoutubeDL(download_opts) as ydl:
@@ -215,20 +176,53 @@ def download_youtube_audio(url: str) -> str:
                 filename = base + ".wav"
 
             if os.path.exists(filename):
-                print(f"  ✅ Success! File: {filename}")
+                print(f"  ✅ Download success: {filename}")
                 return filename
 
-            last_error = RuntimeError(f"File not found after download: {filename}")
+            # Fallback: scan downloads folder for newest .wav
+            wav_files = [
+                os.path.join(DOWNLOAD_DIR, f)
+                for f in os.listdir(DOWNLOAD_DIR)
+                if f.endswith(".wav")
+            ]
+            if wav_files:
+                latest = max(wav_files, key=os.path.getmtime)
+                print(f"  ✅ Found by scan: {latest}")
+                return latest
+
+            last_error = f"Download finished but WAV not found: {filename}"
 
         except yt_dlp.utils.DownloadError as e:
-            print(f"  Download failed ({client}): {e}")
-            last_error = e
+            err = str(e)
+            print(f"  Download failed ({client}): {err[:300]}")
+            if _is_auth_error(err):
+                auth_blocked = True
+            last_error = err
             continue
 
-    raise RuntimeError(str(last_error))
+    # All clients exhausted
+    if auth_blocked or (COOKIES_FILE is None and COOKIES_FROM_BROWSER is None):
+        raise RuntimeError(
+            "YouTube is blocking this download.\n\n"
+            "This is an IP/authentication block — not a code error.\n\n"
+            "SOLUTION (use the Upload File tab in the app):\n"
+            "  1. Download the video on your local PC using yt-dlp or any tool\n"
+            "  2. Go to the app → Upload File tab\n"
+            "  3. Upload the MP4/MP3/WAV file directly\n\n"
+            "OR for local use, add to .env:\n"
+            "  YTDLP_COOKIES_FROM_BROWSER=chrome\n\n"
+            f"Technical detail: {last_error}"
+        )
+
+    raise RuntimeError(
+        f"Download failed after trying all clients.\n"
+        f"Last error: {last_error}\n"
+        f"Try: pip install -U yt-dlp"
+    )
 
 
 def convert_to_wav(input_path: str) -> str:
+    """Convert any audio/video file to mono 16kHz WAV."""
     output_path = os.path.splitext(input_path)[0] + "_converted.wav"
     subprocess.run(
         ["ffmpeg", "-y", "-i", input_path, "-ac", "1", "-ar", "16000", output_path],
@@ -257,7 +251,8 @@ def chunk_audio(wav_path: str, chunk_minutes: int = 10) -> list:
         chunk_path = f"{base}_chunk_{i}.wav"
         subprocess.run([
             "ffmpeg", "-y", "-i", wav_path,
-            "-ss", str(i * chunk_seconds), "-t", str(chunk_seconds),
+            "-ss", str(i * chunk_seconds),
+            "-t", str(chunk_seconds),
             "-ac", "1", "-ar", "16000", chunk_path,
         ], check=True)
         chunks.append(chunk_path)
