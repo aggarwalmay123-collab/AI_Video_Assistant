@@ -29,7 +29,9 @@ st.markdown("""
 
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 .stApp { background: #0D1117; color: #E6EDF3; }
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
+header { background: transparent !important; box-shadow: none !important; }
+header [data-testid="stToolbar"] { visibility: hidden; }
 .block-container { padding: 1.5rem 2rem 3rem; max-width: 1200px; }
 
 [data-testid="stSidebar"] { background: #161B22; border-right: 1px solid #21262D; }
@@ -224,10 +226,14 @@ def run_pipeline_ui(source: str, language: str):
 
     try:
         update_ui(0); progress_bar.progress(5)
-        chunks = process_input(source)
+        input_result = process_input(source, language)
 
         update_ui(1); progress_bar.progress(20)
-        transcript = transcribe_all(chunks, language)
+        if input_result["type"] == "text":
+            # Captions were found — already have the transcript, skip transcription
+            transcript = input_result["transcript"]
+        else:
+            transcript = transcribe_all(input_result["chunks"], language)
 
         update_ui(2); progress_bar.progress(35)
         title = generate_title(transcript)
