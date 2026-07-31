@@ -1,6 +1,7 @@
 import streamlit as st
 import time
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 from utils.audio_processor import process_input
 from core.transcriber import transcribe_all
@@ -36,6 +37,20 @@ header [data-testid="stToolbar"] { visibility: hidden; }
 
 [data-testid="stSidebar"] { background: #161B22; border-right: 1px solid #21262D; }
 [data-testid="stSidebar"] .block-container { padding: 1.5rem 1rem; }
+/* Pin the sidebar to the viewport and let it scroll internally so nav
+   controls never get pushed off-screen by long content. */
+[data-testid="stSidebar"] > div:first-child {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+}
+
+.mini-chat-log { max-height: 220px; overflow-y: auto; margin-bottom: 8px; }
+.mini-msg-user { background:#1F6FEB;color:#fff;border-radius:10px 10px 2px 10px;padding:6px 10px;font-size:12px;margin-bottom:6px;max-width:92%;margin-left:auto; }
+.mini-msg-bot { background:#0D1117;border:1px solid #21262D;color:#C9D1D9;border-radius:2px 10px 10px 10px;padding:6px 10px;font-size:12px;margin-bottom:6px;max-width:92%; }
+.log-row { font-size:11px;color:#7D8590;padding:4px 0;border-bottom:1px dashed #21262D; }
+.log-row b { color:#C9D1D9; }
 
 .app-logo { display:flex;align-items:center;gap:10px;padding:0.5rem 0 1.5rem;border-bottom:1px solid #21262D;margin-bottom:1.5rem; }
 .app-logo-text { font-size:18px;font-weight:700;color:#E6EDF3;letter-spacing:-0.3px; }
@@ -121,6 +136,14 @@ def init_state():
 init_state()
 
 
+def log_activity(label: str):
+    """Append a timestamped entry to the sidebar's Updates & Activity feed."""
+    st.session_state.processing_log.append({
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "step": label,
+    })
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
@@ -172,11 +195,14 @@ with st.sidebar:
                 st.rerun()
 
     if st.session_state.result:
+        result = st.session_state.result
+
+        # ── Session Stats ────────────────────────────────────────────────
         st.markdown("---")
         st.markdown('<div class="nav-section">Session Stats</div>', unsafe_allow_html=True)
-        transcript = st.session_state.result.get("transcript", "")
+        transcript = result.get("transcript", "")
         word_count = len(transcript.split())
-        action_count = len([l for l in st.session_state.result.get("action_items","").split("\n") if l.strip()])
+        action_count = len([l for l in result.get("action_items","").split("\n") if l.strip()])
         st.markdown(f"""
         <div style="font-size:12px;color:#7D8590;line-height:2.2;">
             📝 <b style="color:#C9D1D9;">{word_count:,}</b> words transcribed<br>
@@ -184,6 +210,68 @@ with st.sidebar:
             💬 <b style="color:#C9D1D9;">{len(st.session_state.chat_history)}</b> questions asked
         </div>
         """, unsafe_allow_html=True)
+
+        # ── Download Summary — directly from the sidebar ───────────────────
+        st.download_button(
+            "⬇️  Download Summary",
+            data=result.get("summary", ""),
+            file_name=f"{result.get('title', 'summary').strip()[:50] or 'summary'}.txt",
+            mime="text/plain",
+            use_container_width=True,
+            key="sidebar_download_summary",
+        )
+
+        # ── Quick Chat — ask the RAG bot without leaving this page ─────────
+        st.markdown("---")
+        st.markdown('<div class="nav-section">Quick Chat</div>', unsafe_allow_html=True)
+        rag_chain = result.get("rag_chain")
+
+        if rag_chain is None:
+            st.caption("Chat unavailable — no RAG chain was built.")
+        else:
+            if st.session_state.chat_history:
+                recent = st.session_state.chat_history[-4:]
+                log_html = '<div class="mini-chat-log">'
+                for msg in recent:
+                    css = "mini-msg-user" if msg["role"] == "user" else "mini-msg-bot"
+                    log_html += f'<div class="{css}">{msg["content"]}</div>'
+                log_html += "</div>"
+                st.markdown(log_html, unsafe_allow_html=True)
+            else:
+                st.caption("No questions asked yet.")
+
+            with st.form("sidebar_chat_form", clear_on_submit=True):
+                quick_q = st.text_input(
+                    "Quick question", placeholder="Ask about this meeting…",
+                    label_visibility="collapsed",
+                )
+                quick_sent = st.form_submit_button("Ask ➤", use_container_width=True)
+
+            if quick_sent and quick_q.strip():
+                st.session_state.chat_history.append({"role": "user", "content": quick_q.strip()})
+                with st.spinner("🤖 Thinking…"):
+                    try:
+                        quick_answer = ask_question(rag_chain, quick_q.strip())
+                    except Exception as e:
+                        quick_answer = f"⚠️ Error: {e}"
+                st.session_state.chat_history.append({"role": "assistant", "content": quick_answer})
+                log_activity(f'Quick chat: "{quick_q.strip()[:40]}"')
+                st.rerun()
+
+            if st.button("💬  Open full chat →", use_container_width=True, key="sidebar_open_chat"):
+                st.session_state.page = "chat"
+                st.rerun()
+
+        # ── Updates & Activity — processing log ────────────────────────────
+        st.markdown("---")
+        st.markdown('<div class="nav-section">Updates & Activity</div>', unsafe_allow_html=True)
+        if st.session_state.processing_log:
+            log_rows = ""
+            for entry in reversed(st.session_state.processing_log[-8:]):
+                log_rows += f'<div class="log-row">🕓 <b>{entry["time"]}</b> — {entry["step"]}</div>'
+            st.markdown(log_rows, unsafe_allow_html=True)
+        else:
+            st.caption("No activity yet.")
 
         st.markdown("---")
         st.markdown('<div class="secondary-btn">', unsafe_allow_html=True)
@@ -224,34 +312,46 @@ def run_pipeline_ui(source: str, language: str):
                 else:
                     st.markdown(f'<div class="step-row"><span class="step-icon" style="opacity:0.3">{icon}</span><span class="step-label" style="color:#484F58;">{label}</span><span class="step-status step-wait">—</span></div>', unsafe_allow_html=True)
 
+    st.session_state.processing_log = []
+    log_activity("🚀 Started new analysis")
+
     try:
         update_ui(0); progress_bar.progress(5)
         input_result = process_input(source, language)
+        log_activity("Audio/video input processed")
 
         update_ui(1); progress_bar.progress(20)
         if input_result["type"] == "text":
             # Captions were found — already have the transcript, skip transcription
             transcript = input_result["transcript"]
+            log_activity("Transcript loaded from captions")
         else:
             transcript = transcribe_all(input_result["chunks"], language)
+            log_activity("Speech transcribed")
 
         update_ui(2); progress_bar.progress(35)
         title = generate_title(transcript)
+        log_activity(f'Title generated: "{title}"')
 
         update_ui(3); progress_bar.progress(50)
         summary = summarize(transcript)
+        log_activity("Summary generated")
 
         update_ui(4); progress_bar.progress(62)
         action_items = extract_action_items(transcript)
+        log_activity("Action items extracted")
 
         update_ui(5); progress_bar.progress(74)
         decisions = extract_key_decisions(transcript)
+        log_activity("Key decisions extracted")
 
         update_ui(6); progress_bar.progress(86)
         questions = extract_questions(transcript)
+        log_activity("Open questions detected")
 
         update_ui(7); progress_bar.progress(95)
         rag_chain = build_rag_chain(transcript)
+        log_activity("RAG knowledge base built — chat is ready")
 
         progress_bar.progress(100)
         status_ph.empty()
@@ -265,6 +365,7 @@ def run_pipeline_ui(source: str, language: str):
     except Exception as e:
         status_ph.empty()
         progress_bar.empty()
+        log_activity(f"❌ Failed: {e}")
         raise e
 
 
@@ -435,7 +536,7 @@ def page_results():
     </div>
     """, unsafe_allow_html=True)
 
-    tabs = st.tabs(["📋 Summary", "✅ Action Items", "🔑 Key Decisions", "❓ Open Questions"])
+    tabs = st.tabs(["📋 Summary", "✅ Action Items", "🔑 Key Decisions", "❓ Open Questions", "💬 Chat"])
 
     with tabs[0]:
         st.markdown(f'<div class="info-card"><div class="card-content">{summary}</div></div>', unsafe_allow_html=True)
@@ -458,10 +559,15 @@ def page_results():
         for line in lines:
             st.markdown(f'<div class="question-item">❓  {line.lstrip("-•0123456789. ")}</div>', unsafe_allow_html=True)
 
+    with tabs[4]:
+        render_chat_panel(result, key_prefix="results")
 
-# ── Page: Chat ────────────────────────────────────────────────────────────────
-def page_chat():
-    result = st.session_state.result
+
+# ── Chat panel (reusable) ───────────────────────────────────────────────────
+# Renders the full chat UI. Called both from the standalone Chat page AND
+# embedded as a tab inside the Results page, so the bot is always visible
+# right next to the summary — no sidebar navigation required to find it.
+def render_chat_panel(result, key_prefix="chat"):
     if not result:
         st.warning("No analysis yet. Go to Home and process a video first.")
         return
@@ -470,6 +576,9 @@ def page_chat():
     st.markdown('<div style="font-size:13px;color:#7D8590;margin-bottom:1rem;">Answers grounded in the actual transcript via RAG.</div>', unsafe_allow_html=True)
 
     rag_chain = result.get("rag_chain")
+    if rag_chain is None:
+        st.error("No RAG chain was built for this transcript — try reprocessing the video.")
+        return
 
     if not st.session_state.chat_history:
         st.markdown('<div style="font-size:12px;font-weight:600;color:#7D8590;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.4px;">Suggested questions</div>', unsafe_allow_html=True)
@@ -481,11 +590,15 @@ def page_chat():
             "What are the next steps?",
         ]):
             with cols[i % 2]:
-                if st.button(q, key=f"sugg_{i}", use_container_width=True):
+                if st.button(q, key=f"{key_prefix}_sugg_{i}", use_container_width=True):
                     st.session_state.chat_history.append({"role": "user", "content": q})
                     with st.spinner("Thinking…"):
-                        answer = ask_question(rag_chain, q)
+                        try:
+                            answer = ask_question(rag_chain, q)
+                        except Exception as e:
+                            answer = f"⚠️ Error while answering: {e}"
                     st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                    log_activity(f'Chat: "{q[:40]}"')
                     st.rerun()
 
     if st.session_state.chat_history:
@@ -498,11 +611,11 @@ def page_chat():
         chat_html += "</div>"
         st.markdown(chat_html, unsafe_allow_html=True)
 
-        if st.button("🗑️ Clear chat"):
+        if st.button("🗑️ Clear chat", key=f"{key_prefix}_clear"):
             st.session_state.chat_history = []
             st.rerun()
 
-    with st.form("chat_form", clear_on_submit=True):
+    with st.form(f"{key_prefix}_form", clear_on_submit=True):
         col_inp, col_send = st.columns([6, 1])
         with col_inp:
             user_input = st.text_input("Question", placeholder="Ask anything about this meeting…", label_visibility="collapsed")
@@ -512,9 +625,18 @@ def page_chat():
     if submitted and user_input.strip():
         st.session_state.chat_history.append({"role": "user", "content": user_input.strip()})
         with st.spinner("🤖 Thinking…"):
-            answer = ask_question(rag_chain, user_input.strip())
+            try:
+                answer = ask_question(rag_chain, user_input.strip())
+            except Exception as e:
+                answer = f"⚠️ Error while answering: {e}"
         st.session_state.chat_history.append({"role": "assistant", "content": answer})
+        log_activity(f'Chat: "{user_input.strip()[:40]}"')
         st.rerun()
+
+
+# ── Page: Chat (standalone, still reachable from the sidebar) ──────────────
+def page_chat():
+    render_chat_panel(st.session_state.result, key_prefix="page")
 
 
 # ── Page: Transcript ──────────────────────────────────────────────────────────
